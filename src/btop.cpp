@@ -29,6 +29,7 @@ tab-size = 4
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
 #include <windows.h>
+#include <shlobj_core.h>
 
 #include <btop_shared.hpp>
 #include <btop_tools.hpp>
@@ -462,7 +463,7 @@ namespace Runner {
 				<< Term::hide_cursor << Term::sync_end << flush;
 		}
 		//* ----------------------------------------------- THREAD LOOP -----------------------------------------------
-		
+
 	}
 	//? ------------------------------------------ Secondary thread end -----------------------------------------------
 
@@ -522,6 +523,62 @@ namespace Runner {
 
 }
 
+template <typename TChar, typename TStringGetterFunc>
+std::basic_string<TChar> GetStringFromWindowsApi(TStringGetterFunc stringGetter, typename std::basic_string<TChar>::size_type initialSize = MAX_PATH) {
+	std::basic_string<TChar> s(initialSize, 0);
+	for (;;)
+	{
+		auto length = stringGetter(&s[0], s.length());
+		if (length == 0)
+		{
+			return std::basic_string<TChar>();
+		}
+
+		if (length < s.length() - 1)
+		{
+			s.resize(length);
+			s.shrink_to_fit();
+			return s;
+		}
+
+		s.resize(s.length() * 2);
+	}
+}
+
+static fs::path GetRealPath(const fs::path& path) {
+	if (fs::is_symlink(path)) {
+		return fs::read_symlink(path);
+	}
+	return path;
+}
+
+static fs::path GetCurrentUserAppDataPath() {
+	fs::path result;
+	PWSTR path;
+	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &path))) {
+		result = fs::path(path);
+		CoTaskMemFree(path);
+	}
+	return result;
+}
+
+static void SetupFolders() {
+	fs::path running_path = GetStringFromWindowsApi<TCHAR>([](TCHAR* buffer, int size) {
+		return GetModuleFileNameW(nullptr, buffer, FILENAME_MAX);
+	});
+	fs::path app_dir = GetRealPath(running_path).remove_filename();
+
+	Config::conf_dir = GetCurrentUserAppDataPath() / "btop";
+
+	if (!fs::exists(Config::conf_dir)) {
+		fs::create_directory(Config::conf_dir);
+	}
+
+	Config::conf_file = Config::conf_dir / "btop.conf";
+	Logger::logfile = Config::conf_dir / "btop.log";
+	Theme::theme_dir = app_dir / "themes";
+	Theme::user_theme_dir = Config::conf_dir / "themes";
+}
 
 //* --------------------------------------------- Main starts here! ---------------------------------------------------
 int main(int argc, char **argv) {
@@ -538,13 +595,7 @@ int main(int argc, char **argv) {
 	SetConsoleTitleA("btop4win++");
 
 	//? Setup paths for config, log and themes
-	wchar_t self_path[FILENAME_MAX] = { 0 };
-	GetModuleFileNameW(nullptr, self_path, FILENAME_MAX);
-
-	Config::conf_dir = fs::path(self_path).remove_filename();
-	Config::conf_file = Config::conf_dir / "btop.conf";
-	Logger::logfile = Config::conf_dir / "btop.log";
-	Theme::theme_dir = Config::conf_dir / "themes";
+	SetupFolders();
 
 	//? Config init
 	{	vector<string> load_warnings;
@@ -563,7 +614,7 @@ int main(int argc, char **argv) {
 
 		for (const auto& err_str : load_warnings) Logger::warning(err_str);
 	}
-	
+
 
 	//? Initialize terminal and set options
 	if (not Term::init()) {
